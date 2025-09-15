@@ -1,0 +1,505 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CITIZEN
+  CONTRACTOR
+  MODERATOR
+  ADMIN
+  SUPERADMIN
+}
+
+enum ReportStatus {
+  OPEN
+  DUPLICATE
+  MERGED
+  VALIDATED
+  IN_BIDDING
+  ASSIGNED
+  IN_PROGRESS
+  PENDING_CITIZEN_REVIEW
+  COMPLETED
+  VERIFIED
+  CLOSED
+  REJECTED
+  AUTO_CLOSED
+}
+
+enum BidStatus {
+  PENDING
+  SELECTED
+  REJECTED
+  WITHDRAWN
+}
+
+enum ProofApprovalStatus {
+  PENDING
+  OFFICER_APPROVED
+  CITIZEN_CONFIRMED
+  DISPUTED
+  REJECTED
+}
+
+model User {
+  id              String   @id @default(cuid()) @map("_id")
+  email           String   @unique
+  phone           String?  @unique
+  name            String?
+  role            Role     @default(CITIZEN)
+  verified        Boolean  @default(false)
+  profileImageUrl String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // relationships
+  wards            UserWard[]
+  wardAdmins       WardAdmin[]
+  moderatorRoles   Moderator[]
+  reports          Report[]             @relation("reporter")
+  comments         Comment[]
+  reactions        ReportReaction[]
+  subscriptions    ReportSubscription[]
+  contractor       Contractor?
+  reputations      Reputation[]
+  moderatorActions ModeratorAction[]
+  Media            Media[]              @relation("UserMedia")
+  uploadedProofs   CompletionProof[]    @relation("UserProofs")
+}
+
+model UserWard {
+  id        String   @id @default(cuid()) @map("_id")
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  ward      Ward     @relation(fields: [wardId], references: [id])
+  wardId    String
+  isPrimary Boolean  @default(false)
+  joinedAt  DateTime @default(now())
+
+  @@unique([userId, wardId])
+}
+
+model Ward {
+  id        String   @id @default(cuid()) @map("_id")
+  name      String
+  state     String
+  district  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userWards  UserWard[]
+  admins     WardAdmin[]
+  reports    Report[]
+  moderators Moderator[]
+}
+
+model WardAdmin {
+  id        String   @id @default(cuid()) @map("_id")
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  ward      Ward     @relation(fields: [wardId], references: [id])
+  wardId    String
+  roleDesc  String? // e.g., "supervisor", "data-officer"
+  createdAt DateTime @default(now())
+
+  @@unique([userId, wardId])
+}
+
+model Moderator {
+  id         String   @id @default(cuid()) @map("_id")
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  ward       Ward     @relation(fields: [wardId], references: [id])
+  wardId     String
+  assignedAt DateTime @default(now())
+}
+
+model Department {
+  id        String   @id @default(cuid()) @map("_id")
+  name      String
+  code      String?  @unique
+  contact   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  issueTypes IssueType[]
+  Reports    Report[]
+}
+
+model IssueType {
+  id              String     @id @default(cuid()) @map("_id")
+  title           String
+  code            String?    @unique
+  department      Department @relation(fields: [departmentId], references: [id])
+  departmentId    String
+  defaultSeverity Int        @default(3)
+  description     String?
+  Reports         Report[]
+}
+
+model Report {
+  id            String       @id @default(cuid()) @map("_id")
+  title         String
+  description   String?
+  reporter      User         @relation("reporter", fields: [reporterId], references: [id])
+  reporterId    String
+  ward          Ward         @relation(fields: [wardId], references: [id])
+  wardId        String
+  issueTypeId   String?
+  issueType     IssueType?   @relation(fields: [issueTypeId], references: [id])
+  departmentId  String?
+  department    Department?  @relation(fields: [departmentId], references: [id])
+  status        ReportStatus @default(OPEN)
+  severity      Int          @default(0) // user provided or computed 10-100
+  isSensitive   Boolean      @default(false)
+  isSpam        Boolean      @default(false)
+  isDuplicate   Boolean      @default(false)
+  noOfDuplicates Int          @default(0) 
+  duplicateOfId String? 
+  mergedIntoId  String? 
+
+  // Location fields
+  latitude  Float
+  longitude Float
+  geohash   String? // for clustering
+  address   String?
+
+  // visibility & meta
+  upvotes    Int       @default(0)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  closedAt   DateTime?
+  autoClosed Boolean   @default(false)
+
+  // relations
+  media            Media[]
+  reactions        ReportReaction[]
+  subscriptions    ReportSubscription[]
+  comments         Comment[]
+  history          ReportHistory[]
+  bids             Bid[]
+  assignment       Assignment?
+  completionProofs CompletionProof[]
+  tags             ReportTag[]
+  moderatorActions ModeratorAction[]
+
+  @@index([wardId, status])
+  @@index([reporterId])
+  @@index([status, createdAt])
+  @@index([issueTypeId])
+  @@index([departmentId])
+  @@index([latitude, longitude])
+}
+
+model ReportHistory {
+  id                String        @id @default(cuid()) @map("_id")
+  report            Report        @relation(fields: [reportId], references: [id])
+  reportId          String
+  actorId           String? // user or system who made the change
+  actorName         String? // name of actor for timeline display
+  action            String // e.g., "STATUS_CHANGE", "ASSIGNED", "BID_PLACED", "COMMENT_ADDED", "MEDIA_UPLOADED"
+  oldValue          Json? // previous state for comparison
+  newValue          Json? // new state after change
+  oldStatus         ReportStatus? // specific old status for easy filtering
+  newStatus         ReportStatus? // specific new status for easy filtering
+  description       String? // human-readable description for timeline
+  justification     String? // reason for the change (especially for admin actions)
+  metadata          Json? // additional context (bid amounts, assignment details, etc.)
+  isSystemGenerated Boolean       @default(false) // distinguish between user and system actions
+  createdAt         DateTime      @default(now())
+
+  @@index([reportId, createdAt])
+  @@index([actorId])
+  @@index([action])
+}
+
+model Comment {
+  id        String   @id @default(cuid()) @map("_id")
+  report    Report   @relation(fields: [reportId], references: [id])
+  reportId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  authorId  String
+  content   String
+  isPrivate Boolean  @default(false) // moderator-only notes or visible to affected user
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ReportReaction {
+  id        String   @id @default(cuid()) @map("_id")
+  report    Report   @relation(fields: [reportId], references: [id])
+  reportId  String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  type      String // e.g., "UPVOTE", "DOWNVOTE", "THANKS"
+  createdAt DateTime @default(now())
+
+  @@unique([reportId, userId, type])
+}
+
+model ReportSubscription {
+  id        String   @id @default(cuid()) @map("_id")
+  report    Report   @relation(fields: [reportId], references: [id])
+  reportId  String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@unique([reportId, userId])
+}
+
+model Media {
+  id           String   @id @default(cuid()) @map("_id")
+  url          String
+  mimeType     String?
+  caption      String?
+  uploadedBy   User?    @relation("UserMedia", fields: [uploadedById], references: [id])
+  uploadedById String?
+  uploadedAt   DateTime @default(now())
+  lat          Float?
+  lon          Float?
+  source       String? // "REPORT", "PROOF", "CONTRACTOR_LOG"
+
+  // Relations
+  report            Report?          @relation(fields: [reportId], references: [id])
+  reportId          String?
+  completionProof   CompletionProof? @relation("ProofMedia", fields: [completionProofId], references: [id])
+  completionProofId String?
+}
+
+model Contractor {
+  id             String   @id @default(cuid()) @map("_id")
+  user           User?    @relation(fields: [userId], references: [id])
+  userId         String?  @unique
+  businessName   String
+  panNumber      String?  @unique
+  gstNumber      String?  @unique
+  registrationNo String?
+  kycDocuments   Json? 
+  isVerified     Boolean  @default(false)
+  strikes        Int      @default(0)
+  onTimeRate     Float?   @default(1.0)
+  avgRating      Float?   @default(0.0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  bids        Bid[]
+  assignments Assignment[]
+
+  @@index([isVerified])
+  @@index([avgRating])
+}
+
+model Bid {
+  id            String     @id @default(cuid()) @map("_id")
+  report        Report     @relation(fields: [reportId], references: [id])
+  reportId      String
+  contractor    Contractor @relation(fields: [contractorId], references: [id])
+  contractorId  String
+  amount        Float 
+  breakdown     Json? 
+  notes         String?
+  status        BidStatus  @default(PENDING)
+  score         Float? // precomputed weighted score (price+reputation+officerAdj)
+  officerAdjPct Float? // small officer adjustment (transparent)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  // Relations
+  assignment Assignment?
+
+  @@index([reportId])
+  @@index([contractorId])
+  @@index([status])
+  @@index([amount])
+}
+
+model Assignment {
+  id               String             @id @default(cuid()) @map("_id")
+  report           Report             @relation(fields: [reportId], references: [id])
+  reportId         String             @unique
+  bid              Bid                @relation(fields: [bidId], references: [id])
+  bidId            String             @unique
+  contractor       Contractor         @relation(fields: [contractorId], references: [id])
+  contractorId     String
+  assignedById     String? // officer who assigned
+  assignedAt       DateTime           @default(now())
+  deadlineAt       DateTime?
+  status           String             @default("ASSIGNED") // internal status
+  penaltyAmount    Float? // Changed from Decimal to Float for MongoDB
+  extensions       ExtensionRequest[]
+  completionProofs CompletionProof[]
+}
+
+model ExtensionRequest {
+  id              String     @id @default(cuid()) @map("_id")
+  assignment      Assignment @relation(fields: [assignmentId], references: [id])
+  assignmentId    String
+  contractorId    String
+  requestedDays   Int
+  justification   String
+  officerApproved Boolean? 
+  votesFor        Int        @default(0) // community validation
+  votesAgainst    Int        @default(0)
+  createdAt       DateTime   @default(now())
+}
+
+model Justification {
+  id        String   @id @default(cuid()) @map("_id")
+  relatedTo String? // e.g., "REPORT", "BID", "ASSIGNMENT"
+  relatedId String? // id of the related record
+  actorId   String? // who wrote justification
+  actorRole Role?
+  message   String
+  createdAt DateTime @default(now())
+}
+
+model CompletionProof {
+  id             String              @id @default(cuid()) @map("_id")
+  report         Report              @relation(fields: [reportId], references: [id])
+  reportId       String
+  assignment     Assignment?         @relation(fields: [assignmentId], references: [id])
+  assignmentId   String?
+  uploadedById   String? // contractor or officer
+  uploadedBy     User?               @relation("UserProofs", fields: [uploadedById], references: [id])
+  media          Media[]             @relation("ProofMedia")
+  progressPct    Int? // 0-100
+  notes          String?
+  lat            Float? // Changed from Decimal to Float for MongoDB
+  lon            Float? // Changed from Decimal to Float for MongoDB
+  approvalStatus ProofApprovalStatus @default(PENDING)
+  createdAt      DateTime            @default(now())
+
+  // Relations
+  approvals CompletionProofApproval[]
+}
+
+model CompletionProofApproval {
+  id              String          @id @default(cuid()) @map("_id")
+  completionProof CompletionProof @relation(fields: [proofId], references: [id])
+  proofId         String
+  approverId      String // officer or citizen
+  approverRole    Role
+  isApproved      Boolean
+  comment         String?
+  createdAt       DateTime        @default(now())
+}
+
+model Reputation {
+  id        String   @id @default(cuid()) @map("_id")
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  score     Float    @default(0)
+  reason    String?
+  createdAt DateTime @default(now())
+}
+
+model ModeratorAction {
+  id            String    @id @default(cuid()) @map("_id")
+  moderator     User      @relation(fields: [moderatorId], references: [id])
+  moderatorId   String
+  report        Report    @relation(fields: [reportId], references: [id])
+  reportId      String
+  action        String // DELETE, FLAG, EDIT, HIDE, STATUS_CHANGE, ASSIGN, APPROVE, REJECT
+  justification String? // reason for the action
+  oldValue      Json? // previous state
+  newValue      Json? // new state after action
+  isReversible  Boolean   @default(true) // whether action can be undone
+  reversedAt    DateTime? // when action was reversed
+  reversedBy    String? // who reversed the action
+  createdAt     DateTime  @default(now())
+
+  @@index([moderatorId])
+  @@index([reportId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model AdminLog {
+  id                   String     @id @default(cuid()) @map("_id")
+  adminId              String // admin who performed action
+  adminName            String // admin name at time of action
+  adminRole            Role // admin role at time of action
+  entityType           EntityType // what type of entity was affected
+  entityId             String // ID of affected entity
+  actionType           ActionType // type of action performed
+  justificationMessage String? // reason for action
+  oldValue             Json? // previous state
+  newValue             Json? // new state
+  ipAddress            String? // for security auditing
+  userAgent            String? // browser/client info
+  sessionId            String? // session identifier
+  metadata             Json? // additional context
+  createdAt            DateTime   @default(now())
+
+  @@index([adminId])
+  @@index([entityType, entityId])
+  @@index([actionType])
+  @@index([createdAt])
+}
+
+enum EntityType {
+  USER
+  REPORT
+  COMMENT
+  WARD
+  DEPARTMENT
+  ISSUE_TYPE
+  CONTRACTOR
+  BID
+  ASSIGNMENT
+  COMPLETION_PROOF
+}
+
+enum ActionType {
+  CREATED
+  UPDATED
+  DELETED
+  BLOCKED
+  UNBLOCKED
+  APPROVED
+  REJECTED
+  ROLE_CHANGED
+  STATUS_CHANGED
+  ASSIGNED
+  UNASSIGNED
+  FLAGGED
+  UNFLAGGED
+  MERGED
+  VERIFIED
+  CLOSED
+  REOPENED
+}
+
+model AuditLog {
+  id          String   @id @default(cuid()) @map("_id")
+  actorId     String?
+  actorRole   Role?
+  actorName   String? // name at time of action
+  action      String
+  entityType  String? // type of entity affected
+  entityId    String? // ID of affected entity
+  meta        Json?
+  description String? // human readable description
+  ipAddress   String? // for security tracking
+  timestamp   DateTime @default(now()) // renamed from createdAt for clarity
+  createdAt   DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([timestamp])
+}
+
+model ReportTag {
+  id       String @id @default(cuid()) @map("_id")
+  report   Report @relation(fields: [reportId], references: [id])
+  reportId String
+  tag      String
+}
