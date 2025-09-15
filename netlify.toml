@@ -1,0 +1,13 @@
+[build]
+  # Build command that generates Prisma client first
+  command = "prisma generate && node server-production.js"
+  
+  # Publish directory
+  publish = "."
+
+[build.environment]
+  # Node.js version
+  NODE_VERSION = "18"
+  
+  # Ensure production environment
+  NODE_ENV = "production"
