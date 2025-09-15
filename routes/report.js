@@ -6,6 +6,10 @@ import { logReportActivity, logReportChange } from "../utils/logger.js";
 const router = express.Router();
 const prisma = new PrismaClient();
 
+router.get("/test-log", async (req, res) => {
+    return res.json({ success: true, message: "Log test endpoint working" });
+});
+
 // ========================================
 // CITIZEN REPORT ROUTES
 // ========================================
